@@ -5,109 +5,218 @@
 #ifndef CACHING_PROXY_PROXY_H
 #define CACHING_PROXY_PROXY_H
 #include <cstdlib>
-#include <boost/asio.hpp>
-#include <boost/bind.hpp>
-#include <boost/enable_shared_from_this.hpp>
-#include <boost/shared_ptr.hpp>
+#include <cstddef>
 #include <iostream>
 #include <string>
-
-using namespace std;
-using namespace boost::asio;
-using ip::tcp;
-
-
-class Connection: public boost::enable_shared_from_this<Connection> {
-public:
-    Connection(io_service& s)
-            : socket(s), read_buffer_() {
-
-    }
-
-    ~Connection() {
-        socket.close();
-        cout << "~Connection" << endl;
-    }
-
-    void StartWork() {
-        cout << "The new connection object is starting now." << endl;
-        async_read(socket, buffer(read_buffer_),
-                   boost::bind(&Connection::AfterReadChar, shared_from_this(), _1));
-    }
-
-    void AfterReadChar(boost::system::error_code const& ec) {
-        if (ec) {
-            cout << ec.message() << endl;
-            return;
-        }
-
-        vector<char> x = read_buffer_;
-        for(char i:x){
-            cout<<i;
-        }
-        cout<<endl;
-    }
-
-public:
-    tcp::socket socket;
-
-private:
-    vector<char> read_buffer_;
-};
-
-
-class Server {
-public:
-
-    Server(io_service & s, tcp::endpoint const& listen_endpoint)
-            : io_(s), signals_(s), acceptor_(s, listen_endpoint) {
-        signals_.add(SIGINT);
-        signals_.add(SIGTERM);
-#if defined(SIGQUIT)
-        signals_.add(SIGQUIT);
-#endif
-        signals_.async_wait(boost::bind(&Server::Stop, this));
-        boost::shared_ptr<Connection> c(new Connection(io_));
-        cout << "count1:" << c.use_count() << endl;
-        acceptor_.async_accept(c->socket,
-                               boost::bind(&Server::AfterAccept, this, c, _1));
-        cout << "count2:" << c.use_count() << endl;
-    }
-
-    void Run() {
-        io_.run();
-    }
-
-    void AfterAccept(boost::shared_ptr<Connection>& c, boost::system::error_code const& ec) {
-        // Check whether the server was stopped by a signal before this completion
-        // handler had a chance to run.
-        if (!acceptor_.is_open()) {
-            return;
-        }
-
-        cout << "count3:" << c.use_count() << endl;
-
-        if (!ec) {
-            c->StartWork();
-
-            boost::shared_ptr<Connection> c2(new Connection(io_));
-
-            acceptor_.async_accept(c2->socket,
-                                   boost::bind(&Server::AfterAccept, this, c2, _1));
-        }
-    }
-
-private:
-
-    void Stop() {
-        cout << "stop io_service" << endl;
-        io_.stop();
-    }
-
-private:
-    io_service& io_;
-    boost::asio::signal_set signals_;
-    tcp::acceptor acceptor_;
-};
+ 
+#include <boost/shared_ptr.hpp>
+#include <boost/enable_shared_from_this.hpp>
+#include <boost/bind.hpp>
+#include <boost/asio.hpp>
+#include <boost/thread/mutex.hpp>
+using namespace std; 
+ 
+namespace tcp_proxy
+{
+   namespace ip = boost::asio::ip;
+ 
+   class bridge : public boost::enable_shared_from_this<bridge>
+   {
+   public:
+ 
+      typedef ip::tcp::socket socket_type;
+      typedef boost::shared_ptr<bridge> ptr_type;
+ 
+      bridge(boost::asio::io_service& ios)
+      : downstream_socket_(ios),
+        upstream_socket_(ios)
+      {}
+ 
+      socket_type& downstream_socket()
+      {
+         return downstream_socket_;
+      }
+ 
+      socket_type& upstream_socket()
+      {
+         return upstream_socket_;
+      }
+ 
+      void start(const std::string& upstream_host, unsigned short upstream_port)
+      {
+         upstream_socket_.async_connect(
+              ip::tcp::endpoint(
+                   boost::asio::ip::address::from_string(upstream_host),
+                   upstream_port),
+               boost::bind(&bridge::handle_upstream_connect,
+                    shared_from_this(),
+                    boost::asio::placeholders::error));
+      }
+ 
+      void handle_upstream_connect(const boost::system::error_code& error)
+      {
+         if (!error)
+         {
+            upstream_socket_.async_read_some(
+                 boost::asio::buffer(upstream_data_,max_data_length),
+                 boost::bind(&bridge::handle_upstream_read,
+                      shared_from_this(),
+                      boost::asio::placeholders::error,
+                      boost::asio::placeholders::bytes_transferred));
+ 
+            downstream_socket_.async_read_some(
+                 boost::asio::buffer(downstream_data_,max_data_length),
+                 boost::bind(&bridge::handle_downstream_read,
+                      shared_from_this(),
+                      boost::asio::placeholders::error,
+                      boost::asio::placeholders::bytes_transferred));
+         }
+         else
+            close();
+      }
+ 
+   private:
+ 
+      void handle_downstream_write(const boost::system::error_code& error)
+      {
+         if (!error)
+         {
+            upstream_socket_.async_read_some(
+                 boost::asio::buffer(upstream_data_,max_data_length),
+                 boost::bind(&bridge::handle_upstream_read,
+                      shared_from_this(),
+                      boost::asio::placeholders::error,
+                      boost::asio::placeholders::bytes_transferred));
+         }
+         else
+            close();
+      }
+ 
+      void handle_downstream_read(const boost::system::error_code& error,
+                                  const size_t& bytes_transferred)
+      {
+         if (!error)
+         {
+            async_write(upstream_socket_,
+                  boost::asio::buffer(downstream_data_,bytes_transferred),
+                  boost::bind(&bridge::handle_upstream_write,
+                        shared_from_this(),
+                        boost::asio::placeholders::error));
+			cout<<downstream_data_;
+         }
+         else
+            close();
+      }
+ 
+      void handle_upstream_write(const boost::system::error_code& error)
+      {
+         if (!error)
+         {
+            downstream_socket_.async_read_some(
+                 boost::asio::buffer(downstream_data_,max_data_length),
+                 boost::bind(&bridge::handle_downstream_read,
+                      shared_from_this(),
+                      boost::asio::placeholders::error,
+                      boost::asio::placeholders::bytes_transferred));
+         }
+         else
+            close();
+      }
+ 
+      void handle_upstream_read(const boost::system::error_code& error,
+                                const size_t& bytes_transferred)
+      {
+         if (!error)
+         {
+            async_write(downstream_socket_,
+                 boost::asio::buffer(upstream_data_,bytes_transferred),
+                 boost::bind(&bridge::handle_downstream_write,
+                      shared_from_this(),
+                      boost::asio::placeholders::error));
+         }
+         else
+            close();
+      }
+ 
+      void close()
+      {
+         boost::mutex::scoped_lock lock(mutex_);
+         if (downstream_socket_.is_open())
+            downstream_socket_.close();
+         if (upstream_socket_.is_open())
+            upstream_socket_.close();
+      }
+ 
+      socket_type downstream_socket_;
+      socket_type upstream_socket_;
+ 
+      enum { max_data_length = 8192 }; //8KB
+      unsigned char downstream_data_[max_data_length];
+      unsigned char upstream_data_[max_data_length];
+ 
+      boost::mutex mutex_;
+ 
+   public:
+ 
+      class acceptor
+      {
+      public:
+ 
+         acceptor(boost::asio::io_service& io_service,
+                  const std::string& local_host, unsigned short local_port,
+                  const std::string& upstream_host, unsigned short upstream_port)
+         : io_service_(io_service),
+           localhost_address(boost::asio::ip::address_v4::from_string(local_host)),
+           acceptor_(io_service_,ip::tcp::endpoint(localhost_address,local_port)),
+           upstream_port_(upstream_port),
+           upstream_host_(upstream_host)
+         {}
+ 
+         bool accept_connections()
+         {
+            try
+            {
+               session_ = boost::shared_ptr<bridge>(new bridge(io_service_));
+               acceptor_.async_accept(session_->downstream_socket(),
+                    boost::bind(&acceptor::handle_accept,
+                         this,
+                         boost::asio::placeholders::error));
+            }
+            catch(std::exception& e)
+            {
+               std::cerr << "acceptor exception: " << e.what() << std::endl;
+               return false;
+            }
+            return true;
+         }
+ 
+      private:
+ 
+         void handle_accept(const boost::system::error_code& error)
+         {
+            if (!error)
+            {
+               session_->start(upstream_host_,upstream_port_);
+               if (!accept_connections())
+               {
+                  std::cerr << "Failure during call to accept." << std::endl;
+               }
+            }
+            else
+            {
+               std::cerr << "Error: " << error.message() << std::endl;
+            }
+         }
+ 
+         boost::asio::io_service& io_service_;
+         ip::address_v4 localhost_address;
+         ip::tcp::acceptor acceptor_;
+         ptr_type session_;
+         unsigned short upstream_port_;
+         std::string upstream_host_;
+      };
+ 
+   };
+}
 
 #endif //CACHING_PROXY_PROXY_H

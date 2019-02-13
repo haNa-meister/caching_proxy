@@ -1,13 +1,17 @@
 #include <iostream>
 #include "proxy.h"
 
+using namespace std;
 
 int main(int argc, char** argv) {
-    io_service s;
+	boost::asio::io_service ios;
+	const string hostname = "127.0.0.1"; 
 
-    tcp::endpoint listen_endpoint(tcp::v4(), 12345);
+	tcp_proxy::bridge::acceptor acceptor(ios,
+                                         hostname, 12345,
+                                         hostname, 80);
+    acceptor.accept_connections();
+    ios.run();
 
-    Server server(s, listen_endpoint);
-    server.Run();
-    return 0;
+	return 0;
 }
