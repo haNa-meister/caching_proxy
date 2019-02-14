@@ -14,209 +14,203 @@
 #include <boost/bind.hpp>
 #include <boost/asio.hpp>
 #include <boost/thread/mutex.hpp>
+#include <boost/array.hpp>
+#include <boost/regex.hpp>
+#include "parse.h"
 using namespace std; 
  
-namespace tcp_proxy
-{
-   namespace ip = boost::asio::ip;
- 
-   class bridge : public boost::enable_shared_from_this<bridge>
-   {
-   public:
- 
-      typedef ip::tcp::socket socket_type;
-      typedef boost::shared_ptr<bridge> ptr_type;
- 
-      bridge(boost::asio::io_service& ios)
-      : downstream_socket_(ios),
-        upstream_socket_(ios)
-      {}
- 
-      socket_type& downstream_socket()
-      {
-         return downstream_socket_;
-      }
- 
-      socket_type& upstream_socket()
-      {
-         return upstream_socket_;
-      }
- 
-      void start(const std::string& upstream_host, unsigned short upstream_port)
-      {
-         upstream_socket_.async_connect(
-              ip::tcp::endpoint(
-                   boost::asio::ip::address::from_string(upstream_host),
-                   upstream_port),
-               boost::bind(&bridge::handle_upstream_connect,
-                    shared_from_this(),
-                    boost::asio::placeholders::error));
-      }
- 
-      void handle_upstream_connect(const boost::system::error_code& error)
-      {
-         if (!error)
-         {
-            upstream_socket_.async_read_some(
-                 boost::asio::buffer(upstream_data_,max_data_length),
-                 boost::bind(&bridge::handle_upstream_read,
-                      shared_from_this(),
-                      boost::asio::placeholders::error,
-                      boost::asio::placeholders::bytes_transferred));
- 
-            downstream_socket_.async_read_some(
-                 boost::asio::buffer(downstream_data_,max_data_length),
-                 boost::bind(&bridge::handle_downstream_read,
-                      shared_from_this(),
-                      boost::asio::placeholders::error,
-                      boost::asio::placeholders::bytes_transferred));
-         }
-         else
-            close();
-      }
- 
-   private:
- 
-      void handle_downstream_write(const boost::system::error_code& error)
-      {
-         if (!error)
-         {
-            upstream_socket_.async_read_some(
-                 boost::asio::buffer(upstream_data_,max_data_length),
-                 boost::bind(&bridge::handle_upstream_read,
-                      shared_from_this(),
-                      boost::asio::placeholders::error,
-                      boost::asio::placeholders::bytes_transferred));
-         }
-         else
-            close();
-      }
- 
-      void handle_downstream_read(const boost::system::error_code& error,
-                                  const size_t& bytes_transferred)
-      {
-         if (!error)
-         {
-            async_write(upstream_socket_,
-                  boost::asio::buffer(downstream_data_,bytes_transferred),
-                  boost::bind(&bridge::handle_upstream_write,
-                        shared_from_this(),
-                        boost::asio::placeholders::error));
-			cout<<downstream_data_;
-         }
-         else
-            close();
-      }
- 
-      void handle_upstream_write(const boost::system::error_code& error)
-      {
-         if (!error)
-         {
-            downstream_socket_.async_read_some(
-                 boost::asio::buffer(downstream_data_,max_data_length),
-                 boost::bind(&bridge::handle_downstream_read,
-                      shared_from_this(),
-                      boost::asio::placeholders::error,
-                      boost::asio::placeholders::bytes_transferred));
-         }
-         else
-            close();
-      }
- 
-      void handle_upstream_read(const boost::system::error_code& error,
-                                const size_t& bytes_transferred)
-      {
-         if (!error)
-         {
-            async_write(downstream_socket_,
-                 boost::asio::buffer(upstream_data_,bytes_transferred),
-                 boost::bind(&bridge::handle_downstream_write,
-                      shared_from_this(),
-                      boost::asio::placeholders::error));
-         }
-         else
-            close();
-      }
- 
-      void close()
-      {
-         boost::mutex::scoped_lock lock(mutex_);
-         if (downstream_socket_.is_open())
-            downstream_socket_.close();
-         if (upstream_socket_.is_open())
-            upstream_socket_.close();
-      }
- 
-      socket_type downstream_socket_;
-      socket_type upstream_socket_;
- 
-      enum { max_data_length = 8192 }; //8KB
-      unsigned char downstream_data_[max_data_length];
-      unsigned char upstream_data_[max_data_length];
- 
-      boost::mutex mutex_;
- 
-   public:
- 
-      class acceptor
-      {
-      public:
- 
-         acceptor(boost::asio::io_service& io_service,
-                  const std::string& local_host, unsigned short local_port,
-                  const std::string& upstream_host, unsigned short upstream_port)
-         : io_service_(io_service),
-           localhost_address(boost::asio::ip::address_v4::from_string(local_host)),
-           acceptor_(io_service_,ip::tcp::endpoint(localhost_address,local_port)),
-           upstream_port_(upstream_port),
-           upstream_host_(upstream_host)
-         {}
- 
-         bool accept_connections()
-         {
-            try
-            {
-               session_ = boost::shared_ptr<bridge>(new bridge(io_service_));
-               acceptor_.async_accept(session_->downstream_socket(),
-                    boost::bind(&acceptor::handle_accept,
-                         this,
-                         boost::asio::placeholders::error));
-            }
-            catch(std::exception& e)
-            {
-               std::cerr << "acceptor exception: " << e.what() << std::endl;
-               return false;
-            }
-            return true;
-         }
- 
-      private:
- 
-         void handle_accept(const boost::system::error_code& error)
-         {
-            if (!error)
-            {
-               session_->start(upstream_host_,upstream_port_);
-               if (!accept_connections())
-               {
-                  std::cerr << "Failure during call to accept." << std::endl;
-               }
-            }
-            else
-            {
-               std::cerr << "Error: " << error.message() << std::endl;
-            }
-         }
- 
-         boost::asio::io_service& io_service_;
-         ip::address_v4 localhost_address;
-         ip::tcp::acceptor acceptor_;
-         ptr_type session_;
-         unsigned short upstream_port_;
-         std::string upstream_host_;
-      };
- 
-   };
-}
+class connection : public boost::enable_shared_from_this<connection>{
+private:
+    boost::array<char, 8192> data_buff;
+    boost::array<char, 8192> server_data_buff;
+    boost::asio::ip::tcp::socket socket_;
+    boost::asio::ip::tcp::socket send_socket_;
+    boost::asio::ip::tcp::resolver resolver_;
+    string header;
+    string res_header;
+    request req;
+    response res;
+    size_t res_readed;
+    bool next;
 
+public:
+
+    connection(boost::asio::io_service& ios): socket_(ios), send_socket_(ios), resolver_(ios), header(), res_readed(0),
+    next(true){
+
+    }
+
+    boost::asio::ip::tcp::socket& socket(){
+        return socket_;
+    }
+
+    void start(){
+        header.clear();
+        res_header.clear();
+        req.clear();
+        res.clear();
+        res_readed = 0;
+        next = true;
+
+        handle_request_header(boost::system::error_code(), 0);
+    }
+
+    void handle_request_header(const boost::system::error_code& err, size_t len){
+        if(err){
+            return;
+        }
+
+        if(header.empty()){
+            header = string(data_buff.data(), len);
+        }
+        else{
+            header += string(data_buff.data(), len);
+        }
+        if(header.find("\r\n\r\n") == std::string::npos) {
+            boost::asio::async_read(socket_, boost::asio::buffer(data_buff), boost::asio::transfer_at_least(1),
+                                    boost::bind(&connection::handle_request_header, shared_from_this(),
+                                                boost::asio::placeholders::error,
+                                                boost::asio::placeholders::bytes_transferred));
+        }
+        else{
+            req = request(header);
+            cout << header << endl;
+            connect_handler();
+        }
+    }
+
+    void connect_handler(){
+        boost::asio::ip::tcp::resolver::query query(req.get_host(), req.get_port());
+        resolver_.async_resolve(query,
+                                boost::bind(&connection::handle_resolve, shared_from_this(),
+                                            boost::asio::placeholders::error,
+                                            boost::asio::placeholders::iterator, true));
+    }
+
+    void handle_resolve(const boost::system::error_code& err,
+                        boost::asio::ip::tcp::resolver::iterator endpoint_iterator,
+                        bool first_time){
+        if(!err){
+            if(first_time){
+                boost::asio::ip::tcp::endpoint endpoint = *endpoint_iterator;
+                cout << endpoint.address() << endl;
+                send_socket_.async_connect(endpoint,
+                                       boost::bind(&connection::handle_resolve, shared_from_this(),
+                                                   boost::asio::placeholders::error,
+                                                   ++endpoint_iterator, false));
+            }
+            else{
+                write_to_server();
+            }
+        }
+    }
+
+    void write_to_server(){
+        boost::asio::async_write(send_socket_, boost::asio::buffer(req.get_header()),
+                        boost::bind(&connection::handle_server_write, shared_from_this(),
+                                    boost::asio::placeholders::error,
+                                    boost::asio::placeholders::bytes_transferred));
+
+        header.clear();
+    }
+
+    void handle_server_write(const boost::system::error_code& err, size_t len){
+        if(!err){
+            handle_server_headers(boost::system::error_code(), 0);
+        } else{
+            cout << "error here" << endl;
+        }
+    }
+
+    void handle_server_headers(const boost::system::error_code& err, size_t len){
+        if(res_header.empty()){
+            res_header = string(server_data_buff.data(), len);
+        }
+        else{
+            res_header += string(server_data_buff.data(), len);
+        }
+        if(res_header.find("\r\n\r\n") == string::npos){
+            async_read(send_socket_, boost::asio::buffer(server_data_buff), boost::asio::transfer_at_least(1),
+                       boost::bind(&connection::handle_server_headers,
+                                   shared_from_this(),
+                                   boost::asio::placeholders::error,
+                                   boost::asio::placeholders::bytes_transferred));
+        }
+        else{
+            res = response(res_header);
+            cout << res.get_header() << endl;
+            boost::asio::async_write(socket_, boost::asio::buffer(res_header),
+                            boost::bind(&connection::handle_browser_write,
+                                        shared_from_this(),
+                                        boost::asio::placeholders::error,
+                                        boost::asio::placeholders::bytes_transferred));
+        }
+    }
+
+    void handle_browser_write(const boost::system::error_code& err, size_t len){
+        if(!err){
+            if((res_readed < res.get_content_length() || res.get_content_length() == 0) & next){
+                async_read(send_socket_, boost::asio::buffer(server_data_buff,len), boost::asio::transfer_at_least(1),
+                           boost::bind(&connection::handle_server_read_body,
+                                       shared_from_this(),
+                                       boost::asio::placeholders::error,
+                                       boost::asio::placeholders::bytes_transferred));
+            } else{
+                if(res.get_alive() && next){
+                    start();
+                }
+            }
+        }
+    }
+
+    void handle_server_read_body(const boost::system::error_code& err, size_t len){
+        if(!err || err == boost::asio::error::eof){
+            res_readed += len;
+            if(err == boost::asio::error::eof) next = false;
+            boost::asio::async_write(socket_, boost::asio::buffer(server_data_buff,len),
+                                     boost::bind(&connection::handle_browser_write,
+                                                 shared_from_this(),
+                                                 boost::asio::placeholders::error,
+                                                 boost::asio::placeholders::bytes_transferred));
+        }
+    }
+};
+
+
+class server{
+private:
+    typedef boost::shared_ptr<connection> pointer;
+    boost::asio::io_service& ios_;
+    boost::asio::ip::tcp::acceptor acceptor_;
+
+public:
+    server(boost::asio::io_service& ios, boost::asio::ip::tcp::endpoint& endpoint)
+            : ios_(ios), acceptor_(ios, endpoint) {
+        start();
+    }
+
+    void start(){
+        pointer new_connection(new connection(ios_));
+        acceptor_.async_accept(new_connection->socket(),
+                               boost::bind(&server::accept_handler, this, new_connection,
+                                           boost::asio::placeholders::error));
+    }
+
+    void run() {
+        ios_.run();
+    }
+
+    void accept_handler(pointer connection_, const boost::system::error_code& _error) {
+        if (!_error && connection_) {
+            try {
+                connection_->start();
+                start();
+            }
+            catch (exception& _e) {
+                cout << _e.what() << endl;
+                return;
+            }
+        }
+    }
+};
 #endif //CACHING_PROXY_PROXY_H
