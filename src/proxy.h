@@ -200,7 +200,7 @@ public:
         ios_.run();
     }
 
-    void accept_handler(pointer connection_, const boost::system::error_code& _error) {
+    void accept_handler(pointer& connection_, const boost::system::error_code& _error) {
         if (!_error && connection_) {
             try {
                 connection_->start();
