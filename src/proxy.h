@@ -1,216 +1,227 @@
 //
-// Created by root on 2/11/19.
-// Proxy handler
+// Created by hana on 2/15/19.
+//
 
 #ifndef CACHING_PROXY_PROXY_H
 #define CACHING_PROXY_PROXY_H
-#include <cstdlib>
-#include <cstddef>
-#include <iostream>
-#include <string>
- 
-#include <boost/shared_ptr.hpp>
-#include <boost/enable_shared_from_this.hpp>
-#include <boost/bind.hpp>
-#include <boost/asio.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/array.hpp>
-#include <boost/regex.hpp>
-#include "parse.h"
-using namespace std; 
- 
-class connection : public boost::enable_shared_from_this<connection>{
+
+#include "proxy_setup.h"
+#include "cache.h"
+#include <glog/logging.h>
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+class connection{
 private:
-    boost::array<char, 8192> data_buff;
-    boost::array<char, 8192> server_data_buff;
-    boost::asio::ip::tcp::socket socket_;
-    boost::asio::ip::tcp::socket send_socket_;
-    boost::asio::ip::tcp::resolver resolver_;
-    string header;
-    string res_header;
+    client_socket* client_socket_;
+    client_socket* server_socket_;
     request req;
     response res;
-    size_t res_readed;
-    bool next;
+    int uid;
+    int fd;
+    string ip;
 
 public:
-
-    connection(boost::asio::io_service& ios): socket_(ios), send_socket_(ios), resolver_(ios), header(), res_readed(0),
-    next(true){
-
+    connection(int uid_, int fd_, string& ip_, cache* cache_proxy):client_socket_(nullptr), server_socket_(nullptr),
+    uid(uid_), fd(fd_), ip(ip_){
+        cout << "cache size currently: " << cache_proxy->get_size() << endl;
+        start(cache_proxy);
     }
 
-    boost::asio::ip::tcp::socket& socket(){
-        return socket_;
+    void server_build(){
+        string port = req.get_port();
+        string host = req.get_host();
+        server_socket_ = new client_socket(port, host);
+        if(server_socket_->socket_setup(false) == -1){
+            cout << "server connect fail" << endl;
+        }
     }
 
-    void start(){
-        header.clear();
-        res_header.clear();
-        req.clear();
-        res.clear();
-        res_readed = 0;
-        next = true;
+    void start(cache* cache_){
+        client_socket_ = new client_socket(uid, fd);
+        int status = 0;
+        if((status = client_socket_->receive_request(req)) == 1 ||status == 0){
+            return;
+        }
+        time_t current_time = time(nullptr);
+        LOG(INFO) << uid << ": " << req.get_first_line() << " from "
+            << ip << " @ " << asctime(localtime(&current_time))<< endl;
+        server_build();
 
-        handle_request_header(boost::system::error_code(), 0);
+        if(req.get_type() == "CONNECT"){
+            handle_connect();
+        } else if(req.get_type() == "GET" || req.get_type() == "POST"){
+            pthread_mutex_lock(&lock);
+
+            if(cache_->find(req.get_header())){
+                response cached_res = cache_->get(req.get_header());
+
+                if(cached_res.get_no_cache() ||
+                        (cached_res.get_cache_control().empty() && !cached_res.get_etag().empty())){
+
+                    LOG(INFO) << uid << ": " << "in cache, but requires validation" << endl;
+                    handle_validate(cache_, cached_res);
+
+                } else{
+                    time_t current = time(nullptr);
+                    if(current > cached_res.get_expire()){
+                        LOG(INFO) << uid << ": " << "in cache, but expired at " + cached_res.get_expire_date() << endl;
+                        cache_->erase(req.get_header(), req.get_url());
+                        handle_no_cached(cache_);
+                    } else{
+                        LOG(INFO) << uid << ": " << "in cache, valid" << endl;
+                        pthread_mutex_unlock(&lock);
+                        string data = cached_res.get_header() + cached_res.get_content();
+                        client_socket_->send_data(data);
+                    }
+                }
+
+
+            } else{
+                LOG(INFO) << uid << ": " << "not in cache" << endl;
+                handle_no_cached(cache_);
+            }
+            return;
+        }
     }
 
-    void handle_request_header(const boost::system::error_code& err, size_t len){
-        if(err){
+    void handle_validate(cache* cache_, response& cached_res){
+        string new_request_header = req.get_header();
+        new_request_header = new_request_header.substr(0,new_request_header.length()-2);
+        new_request_header += "If-None-Match: " + cached_res.get_etag() + "\r\n\r\n";
+
+        LOG(INFO) << uid << ": NOTE re-validate from " << req.get_host() << endl;
+        server_socket_->send_data(new_request_header);
+
+        struct pollfd poll_fd[1];
+        poll_fd[0].fd = server_socket_->get_fd();
+        poll_fd[0].events = POLLIN;
+
+        if(poll(poll_fd, 1, 2000) == 0){
+            cout << "time out" << endl;
             return;
         }
 
-        if(header.empty()){
-            header = string(data_buff.data(), len);
-        }
-        else{
-            header += string(data_buff.data(), len);
-        }
-        if(header.find("\r\n\r\n") == std::string::npos) {
-            boost::asio::async_read(socket_, boost::asio::buffer(data_buff), boost::asio::transfer_at_least(1),
-                                    boost::bind(&connection::handle_request_header, shared_from_this(),
-                                                boost::asio::placeholders::error,
-                                                boost::asio::placeholders::bytes_transferred));
-        }
-        else{
-            req = request(header);
-            cout << header << endl;
-            connect_handler();
-        }
-    }
+        LOG(INFO) << uid << ": Received "<< res.get_first_line() << " from " << req.get_host() << endl;
+        server_socket_->receive_response(res);
 
-    void connect_handler(){
-        boost::asio::ip::tcp::resolver::query query(req.get_host(), req.get_port());
-        resolver_.async_resolve(query,
-                                boost::bind(&connection::handle_resolve, shared_from_this(),
-                                            boost::asio::placeholders::error,
-                                            boost::asio::placeholders::iterator, true));
-    }
-
-    void handle_resolve(const boost::system::error_code& err,
-                        boost::asio::ip::tcp::resolver::iterator endpoint_iterator,
-                        bool first_time){
-        if(!err){
-            if(first_time){
-                boost::asio::ip::tcp::endpoint endpoint = *endpoint_iterator;
-                cout << endpoint.address() << endl;
-                send_socket_.async_connect(endpoint,
-                                       boost::bind(&connection::handle_resolve, shared_from_this(),
-                                                   boost::asio::placeholders::error,
-                                                   ++endpoint_iterator, false));
-            }
-            else{
-                write_to_server();
-            }
-        }
-    }
-
-    void write_to_server(){
-        boost::asio::async_write(send_socket_, boost::asio::buffer(req.get_header()),
-                        boost::bind(&connection::handle_server_write, shared_from_this(),
-                                    boost::asio::placeholders::error,
-                                    boost::asio::placeholders::bytes_transferred));
-
-        header.clear();
-    }
-
-    void handle_server_write(const boost::system::error_code& err, size_t len){
-        if(!err){
-            handle_server_headers(boost::system::error_code(), 0);
+        if(res.get_304()){
+            LOG(INFO) << uid << ": NOTE check validation success" << endl;
+            pthread_mutex_unlock(&lock);
+            string data = cached_res.get_header() + cached_res.get_content();
+            client_socket_->send_data(data);
+            LOG(INFO) << uid << ": Responding " << cached_res.get_first_line() << endl;
         } else{
-            cout << "error here" << endl;
+            LOG(INFO) << uid << ": NOTE validation expires" << endl;
+            cache_->erase(req.get_header(), req.get_url());
+            handle_no_cached(cache_);
         }
     }
 
-    void handle_server_headers(const boost::system::error_code& err, size_t len){
-        if(res_header.empty()){
-            res_header = string(server_data_buff.data(), len);
+    void handle_no_cached(cache* cache_){
+        pthread_mutex_unlock(&lock);
+
+        LOG(INFO) << uid << ": Requesting " << req.get_first_line() << " from " << req.get_host() << endl;
+        server_socket_->send_data(req.get_header());
+        struct pollfd poll_fd[1];
+        poll_fd[0].fd = server_socket_->get_fd();
+        poll_fd[0].events = POLLIN;
+
+        if(poll(poll_fd, 1, 2000) == 0){
+            cout << "time out" << endl;
+            return;
+        }
+
+        server_socket_->receive_response(res);
+        LOG(INFO) << uid << ": Received " << res.get_first_line() << " from " << req.get_host() << endl;
+
+        client_socket_->send_data(res.get_header()+res.get_content());
+        LOG(INFO) << uid << ": Responding " << res.get_first_line() << endl;
+
+        if(res.get_no_store()){
+            LOG(INFO) << uid << ": not cache-able because Cache-Control: no-store" << endl;
+
+        } else if((res.get_no_cache() || res.get_cache_control().empty())
+            && !res.get_etag().empty()){
+            pthread_mutex_lock(&lock);
+            cache_->insert(req.get_header(), res);
+            pthread_mutex_unlock(&lock);
+            LOG(INFO) << uid << ": cached, but requires re-validation" << endl;
+
+        } else if(!res.get_cache_control().empty() && res.get_cache_control().find("max-age") != string::npos){
+            pthread_mutex_lock(&lock);
+            cache_->insert(req.get_header(), res);
+            pthread_mutex_unlock(&lock);
+            LOG(INFO) << uid << ": cached, expires at " << res.get_expire_date() << endl;
+
         }
         else{
-            res_header += string(server_data_buff.data(), len);
-        }
-        if(res_header.find("\r\n\r\n") == string::npos){
-            async_read(send_socket_, boost::asio::buffer(server_data_buff), boost::asio::transfer_at_least(1),
-                       boost::bind(&connection::handle_server_headers,
-                                   shared_from_this(),
-                                   boost::asio::placeholders::error,
-                                   boost::asio::placeholders::bytes_transferred));
-        }
-        else{
-            res = response(res_header);
-            cout << res.get_header() << endl;
-            boost::asio::async_write(socket_, boost::asio::buffer(res_header),
-                            boost::bind(&connection::handle_browser_write,
-                                        shared_from_this(),
-                                        boost::asio::placeholders::error,
-                                        boost::asio::placeholders::bytes_transferred));
+            LOG(INFO) << uid <<": not cache-able because no Cache-Control and no ETag" << endl;
         }
     }
 
-    void handle_browser_write(const boost::system::error_code& err, size_t len){
-        if(!err){
-            if((res_readed < res.get_content_length() || res.get_content_length() == 0) & next){
-                async_read(send_socket_, boost::asio::buffer(server_data_buff,len), boost::asio::transfer_at_least(1),
-                           boost::bind(&connection::handle_server_read_body,
-                                       shared_from_this(),
-                                       boost::asio::placeholders::error,
-                                       boost::asio::placeholders::bytes_transferred));
-            } else{
-                if(res.get_alive() && next){
-                    start();
+    void handle_connect(){
+        string connection_success = "HTTP/1.1 200 Connection Established\r\n\r\n";
+        if(client_socket_->send_data(connection_success) == -1){
+            cout << "send 200 fail" << endl;
+        }
+        LOG(INFO) << uid << ": Responding " << connection_success.substr(0, connection_success.length()-4) << endl;
+
+        struct pollfd poll_fd[2];
+        poll_fd[0].fd = client_socket_->get_fd();
+        poll_fd[1].fd = server_socket_->get_fd();
+        poll_fd[0].events = POLLIN;
+        poll_fd[1].events = POLLIN;
+
+        bool loop = true;
+        while(loop){
+            int status_poll = poll(poll_fd, 2, -1);
+            if(status_poll == -1){
+                cout << "poll fail" << endl;
+                return;
+            } else if (status_poll > 0){
+                if((poll_fd[0].revents & POLLIN) == POLLIN){
+                    loop = handle_mutual_send(true);
+                }
+
+                if((poll_fd[1].revents & POLLIN) == POLLIN){
+                    loop = handle_mutual_send(false);
                 }
             }
         }
     }
 
-    void handle_server_read_body(const boost::system::error_code& err, size_t len){
-        if(!err || err == boost::asio::error::eof){
-            res_readed += len;
-            if(err == boost::asio::error::eof) next = false;
-            boost::asio::async_write(socket_, boost::asio::buffer(server_data_buff,len),
-                                     boost::bind(&connection::handle_browser_write,
-                                                 shared_from_this(),
-                                                 boost::asio::placeholders::error,
-                                                 boost::asio::placeholders::bytes_transferred));
+    bool handle_mutual_send(bool client){
+        int status;
+        string data;
+        client?status = client_socket_->receive_data(data):status = server_socket_->receive_data(data);
+        if(status != 1){
+            LOG(INFO) << uid << ": Tunnel closed" << endl;
+            return false;
         }
-    }
-};
 
-
-class server{
-private:
-    typedef boost::shared_ptr<connection> pointer;
-    boost::asio::io_service& ios_;
-    boost::asio::ip::tcp::acceptor acceptor_;
-
-public:
-    server(boost::asio::io_service& ios, boost::asio::ip::tcp::endpoint& endpoint)
-            : ios_(ios), acceptor_(ios, endpoint) {
-        start();
-    }
-
-    void start(){
-        pointer new_connection(new connection(ios_));
-        acceptor_.async_accept(new_connection->socket(),
-                               boost::bind(&server::accept_handler, this, new_connection,
-                                           boost::asio::placeholders::error));
-    }
-
-    void run() {
-        ios_.run();
-    }
-
-    void accept_handler(pointer& connection_, const boost::system::error_code& _error) {
-        if (!_error && connection_) {
-            try {
-                connection_->start();
-                start();
-            }
-            catch (exception& _e) {
-                cout << _e.what() << endl;
-                return;
-            }
+        client?status = server_socket_->send_data(data):status = client_socket_->send_data(data);
+        if(status == -1){
+            cout << "write fail" << endl;
+            return false;
         }
+        return  true;
+    }
+
+    ~connection(){
+        close_connection();
+    }
+
+    void close_connection(){
+        if(client_socket_){
+            client_socket_->close_client();
+            delete client_socket_;
+        }
+
+        if(server_socket_){
+            server_socket_->close_client();
+            delete server_socket_;
+        }
+
     }
 };
 #endif //CACHING_PROXY_PROXY_H

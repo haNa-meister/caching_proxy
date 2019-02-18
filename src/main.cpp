@@ -1,45 +1,41 @@
 #include <iostream>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "proxy.h"
 
 using namespace std;
 
-int main(int argc, char** argv) {
-	try {
-		cout<< "server start!" << endl;
-		boost::asio::io_service ios;
-		boost::asio::ip::tcp::endpoint endpoint(boost::asio::ip::address_v4::from_string("127.0.0.1"), 12345);
-		server server_(ios, endpoint);
-		server_.run();
-	}
-	catch (exception& err){
-		cout << err.what() << endl;
-	}
 
-	cout << "server stoped!" << endl;
+
+void session(int uid, int fd, string ip, cache* cache_proxy){
+	connection sess(uid, fd, ip, cache_proxy);
+}
+
+int main(int argc, char** argv) {
+	google::InitGoogleLogging(argv[0]);
+	if(access("/var/log/erss/proxy.log", 6) == -1){
+		mkdir("/var/log/erss/", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+	}
+	google::SetLogDestination(google::INFO, "/var/log/erss/proxy.log");
+
+    string port = "12345";
+	client_socket* client = new client_socket(port);
+	client->socket_setup(true);
+
+	cache* cache_proxy = new cache(100);
+	cout << "cache max size: " << cache_proxy->get_max_size() << endl;
+
+	int uid = 0;
+	while(true){
+	    int fd = 0;
+	    string ip;
+	    if((fd = client->handshake(ip)) == -1){
+	    	cout << "can not accept" << endl;
+			break;
+	    }
+	    thread(session, uid, fd, ip, cache_proxy).detach();
+	    uid++;
+	}
 
 	return 0;
 }
-
-//int main(){
-//    string test = "HTTP/1.1 200 OK\r\n"
-//                  "Accept-Ranges: bytes\r\n"
-//                  "Cache-Control: no-cache\r\n"
-//                  "Connection: Keep-Alive\r\n"
-//                  "Content-Length: 14615\r\n"
-//                  "Content-Type: text/html\r\n"
-//                  "Date: Wed, 13 Feb 2019 21:47:38 GMT\r\n"
-//                  "Etag: \"5c36c624-3917\"\r\n"
-//                  "Expires: Thu, 14 Feb 2019 21:47:39 GMT\r\n"
-//                  "Last-Modified: Thu, 10 Jan 2019 04:12:20 GMT\r\n"
-//                  "P3p: CP=\" OTI DSP COR IVA OUR IND COM \"\r\n"
-//                  "Pragma: no-cache\r\n"
-//                  "Server: BWS/1.1\r\n"
-//                  "Set-Cookie: BAIDUID=A9577F69F99B1DA8EED596C62BC82937:FG=1; expires=Thu, 31-Dec-37 23:55:55 GMT; max-age=2147483647; path=/; domain=.baidu.com\r\n"
-//                  "Set-Cookie: BIDUPSID=A9577F69F99B1DA8EED596C62BC82937; expires=Thu, 31-Dec-37 23:55:55 GMT; max-age=2147483647; path=/; domain=.baidu.com\r\n"
-//                  "Set-Cookie: PSTM=1550094458; expires=Thu, 31-Dec-37 23:55:55 GMT; max-age=2147483647; path=/; domain=.baidu.com\r\n"
-//                  "Vary: Accept-Encoding\r\n"
-//                  "X-Ua-Compatible: IE=Edge,chrome=1\r\n\r\n";
-//    response res(test);
-//    res.get_all();
-//    return 0;
-//}
