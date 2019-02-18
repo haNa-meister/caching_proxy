@@ -8,12 +8,14 @@
 #include "proxy_setup.h"
 #include "cache.h"
 #include <glog/logging.h>
+#include <memory>
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 class connection{
+    typedef shared_ptr<client_socket> client_socket_ptr;
 private:
-    client_socket* client_socket_;
-    client_socket* server_socket_;
+    client_socket_ptr client_socket_;
+    client_socket_ptr server_socket_;
     request req;
     response res;
     int uid;
@@ -21,7 +23,7 @@ private:
     string ip;
 
 public:
-    connection(int uid_, int fd_, string& ip_, cache* cache_proxy):client_socket_(nullptr), server_socket_(nullptr),
+    connection(int uid_, int fd_, string& ip_, shared_ptr<cache>& cache_proxy):client_socket_(nullptr), server_socket_(nullptr),
     uid(uid_), fd(fd_), ip(ip_){
         cout << "cache size currently: " << cache_proxy->get_size() << endl;
         start(cache_proxy);
@@ -30,14 +32,14 @@ public:
     void server_build(){
         string port = req.get_port();
         string host = req.get_host();
-        server_socket_ = new client_socket(port, host);
+        server_socket_ = make_shared<client_socket>(port, host);
         if(server_socket_->socket_setup(false) == -1){
             cout << "server connect fail" << endl;
         }
     }
 
-    void start(cache* cache_){
-        client_socket_ = new client_socket(uid, fd);
+    void start(shared_ptr<cache>& cache_){
+        client_socket_ = make_shared<client_socket>(uid, fd);
         int status = 0;
         if((status = client_socket_->receive_request(req)) == 1 ||status == 0){
             return;
@@ -84,7 +86,7 @@ public:
         }
     }
 
-    void handle_validate(cache* cache_, response& cached_res){
+    void handle_validate(shared_ptr<cache>& cache_, response& cached_res){
         string new_request_header = req.get_header();
         new_request_header = new_request_header.substr(0,new_request_header.length()-2);
         new_request_header += "If-None-Match: " + cached_res.get_etag() + "\r\n\r\n";
@@ -101,8 +103,8 @@ public:
             return;
         }
 
-        LOG(INFO) << uid << ": Received "<< res.get_first_line() << " from " << req.get_host() << endl;
         server_socket_->receive_response(res);
+        LOG(INFO) << uid << ": Received "<< res.get_first_line() << " from " << req.get_host() << endl;
 
         if(res.get_304()){
             LOG(INFO) << uid << ": NOTE check validation success" << endl;
@@ -117,7 +119,7 @@ public:
         }
     }
 
-    void handle_no_cached(cache* cache_){
+    void handle_no_cached(shared_ptr<cache>& cache_){
         pthread_mutex_unlock(&lock);
 
         LOG(INFO) << uid << ": Requesting " << req.get_first_line() << " from " << req.get_host() << endl;
@@ -214,12 +216,10 @@ public:
     void close_connection(){
         if(client_socket_){
             client_socket_->close_client();
-            delete client_socket_;
         }
 
         if(server_socket_){
             server_socket_->close_client();
-            delete server_socket_;
         }
 
     }

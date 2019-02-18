@@ -7,7 +7,7 @@ using namespace std;
 
 
 
-void session(int uid, int fd, string ip, cache* cache_proxy){
+void session(int uid, int fd, string ip, shared_ptr<cache> cache_proxy){
 	connection sess(uid, fd, ip, cache_proxy);
 }
 
@@ -19,10 +19,10 @@ int main(int argc, char** argv) {
 	google::SetLogDestination(google::INFO, "/var/log/erss/proxy.log");
 
     string port = "12345";
-	client_socket* client = new client_socket(port);
+    shared_ptr<client_socket> client(new client_socket(port));
 	client->socket_setup(true);
 
-	cache* cache_proxy = new cache(100);
+    shared_ptr<cache> cache_proxy(new cache(100));
 	cout << "cache max size: " << cache_proxy->get_max_size() << endl;
 
 	int uid = 0;
