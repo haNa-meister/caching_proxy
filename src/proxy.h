@@ -103,8 +103,8 @@ public:
             return;
         }
 
-        server_socket_->receive_response(res);
         LOG(INFO) << uid << ": Received "<< res.get_first_line() << " from " << req.get_host() << endl;
+        server_socket_->receive_response(res);
 
         if(res.get_304()){
             LOG(INFO) << uid << ": NOTE check validation success" << endl;
