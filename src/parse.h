@@ -1,6 +1,7 @@
 //
-// Created by root on 2/11/19.
+// Created by hana on 2/11/19.
 // This is a parse tool for parsing HTTP request and response
+// This header file contains two class request and response which deal with HTTP request and response.
 
 #ifndef CACHING_PROXY_PARSE_H
 #define CACHING_PROXY_PARSE_H

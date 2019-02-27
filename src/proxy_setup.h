@@ -1,6 +1,8 @@
 //
 // Created by hana on 2/16/19.
-//
+// This file is a header file to complete socket functions.
+// Class client_socket is working on set up a socket on specific port or connect a specific host
+// This class is overload to both client (communicate with browser) and server(communicate with web server)
 
 #ifndef CACHING_PROXY_PROXY_SETUP_H
 #define CACHING_PROXY_PROXY_SETUP_H
@@ -49,6 +51,11 @@ public:
         //socket_setup(false);
     }
 
+    /*
+     * socket_setup function is working on resolve host from DNS server if it is needed,
+     * then bind a socket file descriptor to specific port.
+     * If it is working with server, it will connect specific host.
+     */
     int socket_setup(bool client){
         struct addrinfo host_info = addrinfo();
         struct addrinfo *host_info_list = nullptr;
@@ -123,6 +130,10 @@ public:
         return fd;
     }
 
+    /*
+     * send_data function is working on send a string data to socket buffer.
+     * Return: if success return 0, else return -1
+     */
     int send_data(const string& data_buff){
         char* data = new char[data_buff.length()];
         for(size_t i=0; i<data_buff.length(); i++){
@@ -138,6 +149,10 @@ public:
         return 0;
     }
 
+    /*
+     * receive_data is working on receiving data from socket buffer and transfer to a string type.
+     * Return: if success return 1, if no data is received return 0, if error occurs return -1.
+     */
     int receive_data(string& data){
         char buff[65536];
         memset(buff, 0, 65536);
@@ -155,6 +170,11 @@ public:
         else return 1;
     }
 
+    /*
+     * receive_request is working on receiving 'HTTP request' data from socket buffer and transfer to a request type,
+     * if it is 'POST', it will also receive content.
+     * Return: received size and 0 if error occurs or there is no request data.
+     */
     int receive_request(request& req){
         char buff;
         ssize_t recv_size = 0;
@@ -183,6 +203,11 @@ public:
         return req.get_size();
     }
 
+    /*
+     * receive_response is working on receiving 'HTTP response' data from socket buffer and transfer to a response type,
+     * it will also receive full content even it is chunked data.
+     * Return: received size and 0 if error occurs or there is no response data.
+     */
     int receive_response(response& res){
         char buff;
         ssize_t recv_size = 0;
@@ -245,10 +270,16 @@ public:
         return total_size;
     }
 
+    /*
+     * get_fd will get socket file descriptor of this instance.
+     */
     int get_fd(){
         return socket_fd;
     }
 
+    /*
+     * manual close socket.
+     */
     int close_client(){
         if(close(socket_fd) == -1){
             cout << "close fail" << endl;

@@ -1,3 +1,9 @@
+//
+// Created by hana on 2/15/19.
+// This is main cpp file of proxy.
+// Set up a socket to check if there is request from browser,
+// for every request, rouse a thread to generate a connection instance to deal with.
+// Cache everything on memory.
 #include <iostream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -23,7 +29,6 @@ int main(int argc, char** argv) {
 	client->socket_setup(true);
 
     shared_ptr<cache> cache_proxy(new cache(100));
-	cout << "cache max size: " << cache_proxy->get_max_size() << endl;
 
 	int uid = 0;
 	while(true){

@@ -1,0 +1,15 @@
+1. All threads shared one cache and it stores everything in memory.
+    If there is a malformed website that contains a huge page, then may exceed memory size and cause program crash.
+    Better way is write cache from memory to database.
+
+2. Did not set up a detection on connection time for CONNECT and for receiving data.
+    If there is a malformed website (like google :) )that always active, there will be always an active thread which
+    will occupy server resource. If there is a malformed connection that always keep sending useless data
+    also will cause danger.
+
+3. LOG system requires super user permission.
+    May cause unexpected danger.
+
+4. SET a constant cache size which is 100.
+
+5. SET a constant port which is 12345.

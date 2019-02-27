@@ -1,6 +1,7 @@
 //
 // Created by hana on 2/15/19.
-//
+// This header file in the main logic of proxy,
+// which includes logic that deal with 'GET', 'CONNECT', and 'POST' request and deal with cache.
 
 #ifndef CACHING_PROXY_PROXY_H
 #define CACHING_PROXY_PROXY_H
@@ -11,6 +12,10 @@
 #include <memory>
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
+/*
+ * Every request from browser will rouse a thread to generate a connection instance to deal with it.
+ * It will keep alive until this request has ended.
+ */
 class connection{
     typedef shared_ptr<client_socket> client_socket_ptr;
 private:
@@ -25,10 +30,12 @@ private:
 public:
     connection(int uid_, int fd_, string& ip_, shared_ptr<cache>& cache_proxy):client_socket_(nullptr), server_socket_(nullptr),
     uid(uid_), fd(fd_), ip(ip_){
-        cout << "cache size currently: " << cache_proxy->get_size() << endl;
         start(cache_proxy);
     }
 
+    /*
+     * server_build is working on setting up a connection to server and get corresponding socket fd.
+     */
     void server_build(){
         string port = req.get_port();
         string host = req.get_host();
@@ -38,6 +45,13 @@ public:
         }
     }
 
+    /*
+     * Main logic of proxy to deal with 3 types of HTTP request.
+     * Logic:
+     *  if CONNECT: call connect handler.
+     *  if not CONNECT: if there is a record in cache then try to use cache (deal with validation, expiration)
+     *      if not, call no cache handler.
+     */
     void start(shared_ptr<cache>& cache_){
         client_socket_ = make_shared<client_socket>(uid, fd);
         int status = 0;
@@ -86,6 +100,12 @@ public:
         }
     }
 
+    /*
+     * validation handler.
+     * Logic: add Etag on request, send to server,
+     * if get 304, response cached page to browser.
+     * Else, call no cache handler.
+     */
     void handle_validate(shared_ptr<cache>& cache_, response& cached_res){
         string new_request_header = req.get_header();
         new_request_header = new_request_header.substr(0,new_request_header.length()-2);
@@ -99,7 +119,7 @@ public:
         poll_fd[0].events = POLLIN;
 
         if(poll(poll_fd, 1, 2000) == 0){
-            cout << "time out" << endl;
+            //cout << "time out" << endl;
             return;
         }
 
@@ -119,6 +139,12 @@ public:
         }
     }
 
+    /*
+     * no cache handler.
+     * Logic: build a new connection to server and get new response.
+     * Then check if it can be cached.
+     * Update cache.
+     */
     void handle_no_cached(shared_ptr<cache>& cache_){
         pthread_mutex_unlock(&lock);
 
@@ -129,7 +155,7 @@ public:
         poll_fd[0].events = POLLIN;
 
         if(poll(poll_fd, 1, 2000) == 0){
-            cout << "time out" << endl;
+            //cout << "time out" << endl;
             return;
         }
 
@@ -161,6 +187,12 @@ public:
         }
     }
 
+    /*
+     * connect handler.
+     * Logic: connect server and response 200 to browser.
+     * If receive package from browser then send to server,
+     * if receive package from server then send to browser.
+     */
     void handle_connect(){
         string connection_success = "HTTP/1.1 200 Connection Established\r\n\r\n";
         if(client_socket_->send_data(connection_success) == -1){

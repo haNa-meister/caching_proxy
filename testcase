@@ -1,0 +1,39 @@
+ALL test cases listed in this file is passed.
+
+1. Test on different HTTP requset type.
+    a. GET
+        i. www.baidu.com
+        ii. http://people.duke.edu/~bmr23/ece568/class.html
+        iii. http://people.duke.edu/~bmr23/ece568/homework/hw2/hw2.pdf
+
+    b. POST
+        i. my website for HW1
+
+    c. CONNECT
+        i. www.google.com
+        ii. www.audi.com
+
+    d. chunked data
+        i. http://people.duke.edu/~bmr23/ece568/homework/hw2/hw2.pdf
+        ii. www.baidu.com
+        iii. www.espn.com
+
+2. Test on cache.
+    a. Revalidation needed:
+        i. http://people.duke.edu/~bmr23/ece568/class.html
+        ii. http://www.deeplearningbook.org/lecture_slides.html
+        iii. www.espn.com
+
+    b. Cache-control: max-age
+        i. http://www.sina.com
+
+    c. Cache-control: no store and no cache
+        i. our own designed test example
+
+    e. No Cache-control and No Etag:
+        i. www.cplusplus.com
+
+3. Mixed test
+    a. https://tools.ietf.org/html/rfc7234
+    b. https://www.douyu.com/
+    c. https://github.com/
