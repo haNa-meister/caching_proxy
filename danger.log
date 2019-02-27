@@ -13,3 +13,12 @@
 4. SET a constant cache size which is 100.
 
 5. SET a constant port which is 12345.
+
+6. Answer to the question: deal with external failure.
+    If there is a external failure occurs, our proxy will write into log and also print on screen using cout,
+    but main.cpp will still listen to browser if there is a new request, unless a stop signal is detected.
+
+7. Answer to Exception grantees.
+    Basic exception safety, for example if there is a exception occurs during running a 'connection' instance, then all
+    resources will be cleared but it is possible have some side effects to cache thus it is basic exception safety.
+    For better exception grantees, we need to have a rollback system on cache.
